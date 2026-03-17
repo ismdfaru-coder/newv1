@@ -1,22 +1,20 @@
 "use client"
 
-// Manus AI Agent Tab
+// Manus AI Agent Tab - Updated
 import { useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
-import { 
-  ArrowUp,
-  Loader2,
-  Copy,
-  Check,
-  RotateCcw,
-  ExternalLink,
-  FileText,
-  Code,
-  Sparkles,
-  Bot,
-  Zap,
-  X,
-} from "lucide-react"
+import { ArrowUp } from "lucide-react"
+import { Loader2 } from "lucide-react"
+import { Copy } from "lucide-react"
+import { Check } from "lucide-react"
+import { RotateCcw } from "lucide-react"
+import { ExternalLink } from "lucide-react"
+import { FileText } from "lucide-react"
+import { Code } from "lucide-react"
+import { Sparkles } from "lucide-react"
+import { Bot } from "lucide-react"
+import { Zap } from "lucide-react"
+import { X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { DocViewer, DocWizard, type DocData } from "@/components/doc-viewer"
 import { SlidesViewer, SlidesWizard, type SlidesData } from "@/components/slides-viewer"
