@@ -3,18 +3,34 @@
 // Manus AI Agent Tab - Updated
 import { useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
-import { ArrowUp } from "lucide-react"
-import { Loader2 } from "lucide-react"
-import { Copy } from "lucide-react"
-import { Check } from "lucide-react"
-import { RotateCcw } from "lucide-react"
-import { ExternalLink } from "lucide-react"
-import { FileText } from "lucide-react"
-import { Code } from "lucide-react"
-import { Sparkles } from "lucide-react"
-import { Bot } from "lucide-react"
-import { Zap } from "lucide-react"
-import { X } from "lucide-react"
+import { 
+  ArrowUp, 
+  Loader2, 
+  Copy, 
+  Check, 
+  RotateCcw, 
+  ExternalLink, 
+  FileText, 
+  Code, 
+  Sparkles, 
+  Bot, 
+  Zap, 
+  X,
+  Download,
+  File,
+  FileImage,
+  FileSpreadsheet,
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  Search,
+  PenTool,
+  Globe,
+  Brain
+} from "lucide-react"
 import { cn } from "@/lib/utils"
 import { DocViewer, DocWizard, type DocData } from "@/components/doc-viewer"
 import { SlidesViewer, SlidesWizard, type SlidesData } from "@/components/slides-viewer"
@@ -54,6 +70,12 @@ interface Artifact {
   url?: string
 }
 
+interface ManusFile {
+  fileName: string
+  fileUrl: string
+  mimeType: string
+}
+
 interface ManusSession {
   taskId: string
   taskUrl?: string
@@ -76,7 +98,9 @@ export default function AgentsPage() {
   const [manusSession, setManusSession] = useState<ManusSession | null>(null)
   const [showResultsPanel, setShowResultsPanel] = useState(false)
   const [taskResults, setTaskResults] = useState<string[]>([])
+  const [taskFiles, setTaskFiles] = useState<ManusFile[]>([])
   const [currentTask, setCurrentTask] = useState("")
+  const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set())
   
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -89,12 +113,37 @@ export default function AgentsPage() {
     scrollToBottom()
   }, [messages])
 
+  // Get icon for file type
+  const getFileIcon = (mimeType: string) => {
+    if (mimeType.includes('pdf')) return <FileText className="h-4 w-4 text-red-500" />
+    if (mimeType.includes('image')) return <FileImage className="h-4 w-4 text-blue-500" />
+    if (mimeType.includes('spreadsheet') || mimeType.includes('excel') || mimeType.includes('csv')) return <FileSpreadsheet className="h-4 w-4 text-green-500" />
+    if (mimeType.includes('presentation') || mimeType.includes('pptx')) return <FileText className="h-4 w-4 text-orange-500" />
+    return <File className="h-4 w-4 text-gray-500" />
+  }
+
+  // Get icon for step type
+  const getStepIcon = (type: string, icon?: string) => {
+    if (icon === "thinking" || type === "thinking") return <Brain className="h-3.5 w-3.5 text-purple-500" />
+    if (icon === "processing") return <Loader2 className="h-3.5 w-3.5 text-blue-500 animate-spin" />
+    if (icon === "check" || type === "success") return <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+    if (icon === "error" || type === "error") return <XCircle className="h-3.5 w-3.5 text-red-500" />
+    if (icon === "waiting") return <Clock className="h-3.5 w-3.5 text-amber-500" />
+    if (icon === "action") return <Zap className="h-3.5 w-3.5 text-purple-400" />
+    if (type === "browsing") return <Globe className="h-3.5 w-3.5 text-blue-400" />
+    if (type === "searching") return <Search className="h-3.5 w-3.5 text-cyan-500" />
+    if (type === "writing") return <PenTool className="h-3.5 w-3.5 text-pink-500" />
+    if (type === "info") return <Circle className="h-3.5 w-3.5 text-blue-400" />
+    return <Circle className="h-3.5 w-3.5 text-muted-foreground" />
+  }
+
   // Handle task execution with Manus API
   const handleExecuteTask = async () => {
     if (!currentTask.trim()) return
 
     setIsLoading(true)
     setShowResultsPanel(true)
+    setTaskFiles([])
 
     const assistantMessageId = crypto.randomUUID()
 
@@ -160,6 +209,27 @@ export default function AgentsPage() {
         const data = JSON.parse(e.data);
         rawOutput = data.output;
         setTaskResults(prev => [...prev, rawOutput]);
+      });
+
+      eventSource.addEventListener("file", (e) => {
+        const data = JSON.parse(e.data);
+        setTaskFiles(prev => {
+          // Avoid duplicates
+          if (prev.some(f => f.fileUrl === data.fileUrl)) return prev;
+          return [...prev, data];
+        });
+      });
+
+      eventSource.addEventListener("files", (e) => {
+        const data = JSON.parse(e.data);
+        if (data.files && Array.isArray(data.files)) {
+          setTaskFiles(prev => {
+            const newFiles = data.files.filter((f: ManusFile) => 
+              !prev.some(existing => existing.fileUrl === f.fileUrl)
+            );
+            return [...prev, ...newFiles];
+          });
+        }
       });
 
       eventSource.addEventListener("summary", (e) => {
@@ -433,16 +503,14 @@ export default function AgentsPage() {
                   )}>
                     {/* Status Steps */}
                     {message.steps && message.steps.length > 0 && (
-                      <div className="mb-3 space-y-2">
+                      <div className="mb-3 space-y-1.5">
                         {message.steps.map((step) => (
-                          <div key={step.id} className="flex items-center gap-2 text-sm">
-                            {step.type === "thinking" && <Loader2 className="h-3 w-3 animate-spin text-purple-500" />}
-                            {step.type === "success" && <Check className="h-3 w-3 text-green-500" />}
-                            {step.type === "error" && <X className="h-3 w-3 text-red-500" />}
-                            {step.type === "info" && <Sparkles className="h-3 w-3 text-blue-500" />}
-                            {step.type === "pending" && <div className="h-3 w-3 rounded-full border-2 border-muted-foreground/30" />}
+                          <div key={step.id} className="flex items-start gap-2 text-sm">
+                            <div className="mt-0.5">
+                              {getStepIcon(step.type)}
+                            </div>
                             <span className={cn(
-                              "text-xs",
+                              "text-xs leading-relaxed",
                               step.type === "success" ? "text-green-600 dark:text-green-400" :
                               step.type === "error" ? "text-red-600 dark:text-red-400" :
                               "text-muted-foreground"
@@ -591,15 +659,66 @@ export default function AgentsPage() {
               </div>
             )}
 
+            {/* Files Section */}
+            {taskFiles.length > 0 && (
+              <div className="border-b border-border px-4 py-3">
+                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">
+                  Files ({taskFiles.length})
+                </div>
+                <div className="space-y-2">
+                  {taskFiles.map((file, index) => (
+                    <a
+                      key={index}
+                      href={file.fileUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      download={file.fileName}
+                      className="flex items-center gap-3 rounded-lg border border-border bg-background p-3 hover:bg-muted/50 transition-colors group"
+                    >
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+                        {getFileIcon(file.mimeType)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium text-foreground truncate">
+                          {file.fileName}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {file.mimeType.split('/').pop()?.toUpperCase()}
+                        </div>
+                      </div>
+                      <Download className="h-4 w-4 text-muted-foreground group-hover:text-purple-500 transition-colors" />
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Results */}
             <div className="flex-1 overflow-auto p-4">
               {taskResults.length > 0 ? (
                 <div className="space-y-4">
+                  <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    Output
+                  </div>
                   {taskResults.map((result, index) => (
                     <div key={index} className="rounded-lg bg-background border border-border p-3">
-                      <div className="flex items-center gap-2 mb-2">
-                        <Code className="h-4 w-4 text-purple-500" />
-                        <span className="text-xs font-medium">Result {index + 1}</span>
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <div className="flex items-center gap-2">
+                          <Code className="h-4 w-4 text-purple-500" />
+                          <span className="text-xs font-medium">Result {index + 1}</span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-xs"
+                          onClick={() => handleCopy(result, `result-${index}`)}
+                        >
+                          {copiedId === `result-${index}` ? (
+                            <Check className="h-3 w-3" />
+                          ) : (
+                            <Copy className="h-3 w-3" />
+                          )}
+                        </Button>
                       </div>
                       <pre className="text-xs text-muted-foreground whitespace-pre-wrap overflow-auto max-h-60">
                         {result}

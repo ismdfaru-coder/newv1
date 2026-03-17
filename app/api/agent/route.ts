@@ -1,6 +1,5 @@
 // app/api/agent/route.ts
-// Manus API implementation
-// Creates a task, polls for completion, and streams status updates
+// Manus API implementation with full output parsing and file downloads
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -14,35 +13,67 @@ const getAuthHeaders = () => ({
   "Content-Type": "application/json",
 });
 
-// Response from POST /v1/tasks
-interface TaskCreatedResponse {
-  task_id: string;
-  task_url?: string;
-  status?: string;
+// Message content types
+interface OutputText {
+  type: "output_text";
+  text: string;
 }
 
-// Response from GET /v1/tasks/{task_id}
-interface TaskStatusResponse {
-  task_id: string;
-  status: "pending" | "running" | "completed" | "failed" | "cancelled";
-  output?: {
-    result?: string;
-    artifacts?: Array<{
-      type: string;
-      url?: string;
-      content?: string;
-    }>;
-  };
+interface OutputFile {
+  type: "output_file";
+  fileUrl: string;
+  fileName: string;
+  mimeType: string;
+}
+
+type MessageContent = OutputText | OutputFile;
+
+// Task message structure
+interface TaskMessage {
+  id: string;
+  status: string;
+  role: "user" | "assistant";
+  type: string;
+  content: MessageContent[];
+}
+
+// Task metadata
+interface TaskMetadata {
+  task_title?: string;
+  task_url?: string;
+  [key: string]: string | undefined;
+}
+
+// Full task response from GET /v1/tasks/{task_id}
+interface TaskResponse {
+  id: string;
+  object: string;
+  created_at: number;
+  updated_at: number;
+  status: "pending" | "running" | "completed" | "failed";
   error?: string;
-  created_at?: string;
-  updated_at?: string;
+  incomplete_details?: string;
+  instructions?: string;
+  model?: string;
+  metadata?: TaskMetadata;
+  output?: TaskMessage[];
+  credit_usage?: number;
+}
+
+// Response from POST /v1/tasks
+interface TaskCreatedResponse {
+  id: string;
+  metadata?: TaskMetadata;
+  status?: string;
 }
 
 async function createTask(prompt: string): Promise<TaskCreatedResponse> {
   const res = await fetch(`${MANUS_API_URL}/v1/tasks`, {
     method: "POST",
     headers: getAuthHeaders(),
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ 
+      instructions: prompt,
+    }),
   });
   
   if (!res.ok) {
@@ -53,7 +84,7 @@ async function createTask(prompt: string): Promise<TaskCreatedResponse> {
   return res.json();
 }
 
-async function getTaskStatus(taskId: string): Promise<TaskStatusResponse> {
+async function getTaskStatus(taskId: string): Promise<TaskResponse> {
   const res = await fetch(`${MANUS_API_URL}/v1/tasks/${taskId}?convert=true`, {
     method: "GET",
     headers: getAuthHeaders(),
@@ -65,6 +96,38 @@ async function getTaskStatus(taskId: string): Promise<TaskStatusResponse> {
   }
   
   return res.json();
+}
+
+// Parse task output to extract text and files
+function parseTaskOutput(output: TaskMessage[]): { 
+  texts: string[]; 
+  files: OutputFile[];
+  steps: string[];
+} {
+  const texts: string[] = [];
+  const files: OutputFile[] = [];
+  const steps: string[] = [];
+
+  for (const message of output) {
+    if (message.role === "assistant" && message.content) {
+      for (const content of message.content) {
+        if (content.type === "output_text" && content.text) {
+          texts.push(content.text);
+          // Extract step-like content from text
+          const lines = content.text.split('\n').filter(l => l.trim());
+          for (const line of lines) {
+            if (line.length < 200) {
+              steps.push(line);
+            }
+          }
+        } else if (content.type === "output_file") {
+          files.push(content as OutputFile);
+        }
+      }
+    }
+  }
+
+  return { texts, files, steps };
 }
 
 export async function GET(req: Request) {
@@ -88,106 +151,156 @@ export async function GET(req: Request) {
 
       try {
         // ── 1. Create Manus task ─────────────────────────────
-        send("step", { type: "info", desc: "Creating Manus AI task..." });
+        send("step", { type: "info", desc: "Creating Manus AI task...", icon: "thinking" });
 
         const taskResponse = await createTask(query);
         
-        if (!taskResponse.task_id) {
-          throw new Error("Invalid response: missing task_id");
+        if (!taskResponse.id) {
+          throw new Error("Invalid response: missing task id");
         }
 
-        const taskId = taskResponse.task_id;
+        const taskId = taskResponse.id;
+        const taskUrl = taskResponse.metadata?.task_url || `https://manus.im/app/${taskId}`;
 
-        send("step", { type: "success", desc: `Task created. ID: ${taskId}` });
+        send("step", { type: "success", desc: `Task created successfully`, icon: "check" });
         
-        // Send task URL if available
-        if (taskResponse.task_url) {
-          send("session", {
-            taskId: taskId,
-            taskUrl: taskResponse.task_url,
-            status: "pending",
-          });
-        }
+        // Send task info
+        send("session", {
+          taskId: taskId,
+          taskUrl: taskUrl,
+          status: "pending",
+        });
 
-        send("step", { type: "info", desc: `Processing: "${query}"` });
+        send("step", { type: "info", desc: `Processing: "${query.substring(0, 50)}${query.length > 50 ? '...' : ''}"`, icon: "processing" });
 
-        // ── 2. Poll for task completion ──────────────────────────────────────
-        send("step", { type: "info", desc: "Manus AI is working on your task..." });
-
-        const maxPolls = 180; // 3 minutes max
+        // ── 2. Poll for task completion with detailed updates ──────────────────────────────────────
+        const maxPolls = 180; // 6 minutes max (2s intervals)
         let pollCount = 0;
         let lastStatus = "pending";
+        let lastOutputLength = 0;
+        let sentSteps = new Set<string>();
 
         // Wait a bit before first poll
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, 2000));
 
         while (pollCount < maxPolls) {
           await new Promise(r => setTimeout(r, 2000));
           
-          let currentTask: TaskStatusResponse;
+          let currentTask: TaskResponse;
           try {
             currentTask = await getTaskStatus(taskId);
           } catch (e) {
             // Task might not be ready yet, continue polling
             pollCount++;
-            if (pollCount % 5 === 0) {
-              send("step", { type: "info", desc: `Waiting for task to be ready... (${pollCount * 2}s elapsed)` });
+            if (pollCount % 10 === 0) {
+              send("step", { type: "info", desc: `Waiting for Manus AI... (${pollCount * 2}s)`, icon: "waiting" });
             }
             continue;
           }
 
           // Send status update if changed
           if (currentTask.status !== lastStatus) {
+            const statusMessages: Record<string, { desc: string; icon: string }> = {
+              "pending": { desc: "Task queued, waiting to start...", icon: "waiting" },
+              "running": { desc: "Manus AI is working on your task...", icon: "processing" },
+              "completed": { desc: "Task completed successfully!", icon: "check" },
+              "failed": { desc: currentTask.error || "Task failed", icon: "error" },
+            };
+            const statusInfo = statusMessages[currentTask.status] || { desc: `Status: ${currentTask.status}`, icon: "info" };
             send("step", { 
               type: currentTask.status === "completed" ? "success" : 
-                    currentTask.status === "failed" ? "error" : "info", 
-              desc: `Task status: ${currentTask.status}` 
+                    currentTask.status === "failed" ? "error" : "info",
+              desc: statusInfo.desc,
+              icon: statusInfo.icon
             });
             lastStatus = currentTask.status;
           }
 
+          // Stream intermediate output as it comes
+          if (currentTask.output && currentTask.output.length > lastOutputLength) {
+            const { texts, files, steps } = parseTaskOutput(currentTask.output);
+            
+            // Send new steps that haven't been sent yet
+            for (const step of steps) {
+              const stepKey = step.substring(0, 100);
+              if (!sentSteps.has(stepKey)) {
+                sentSteps.add(stepKey);
+                send("step", { type: "info", desc: step, icon: "action" });
+              }
+            }
+            
+            // Send files as they become available
+            for (const file of files) {
+              send("file", {
+                fileName: file.fileName,
+                fileUrl: file.fileUrl,
+                mimeType: file.mimeType,
+              });
+            }
+            
+            lastOutputLength = currentTask.output.length;
+          }
+
           // Check if task is complete
           if (currentTask.status === "completed") {
-            send("step", { type: "success", desc: "Task completed!" });
-            
-            if (currentTask.output) {
-              const resultText = currentTask.output.result || 
-                JSON.stringify(currentTask.output, null, 2);
+            // Parse final output
+            if (currentTask.output && currentTask.output.length > 0) {
+              const { texts, files } = parseTaskOutput(currentTask.output);
               
+              // Send all files
+              send("files", { 
+                files: files.map(f => ({
+                  fileName: f.fileName,
+                  fileUrl: f.fileUrl,
+                  mimeType: f.mimeType,
+                }))
+              });
+              
+              // Send result text
+              const resultText = texts.join('\n\n');
               send("result", { 
                 output: resultText,
                 success: true,
-                artifacts: currentTask.output.artifacts || []
+                taskUrl: taskUrl,
+                creditUsage: currentTask.credit_usage,
               });
               
-              send("summary", { text: resultText });
+              send("summary", { 
+                text: resultText,
+                taskTitle: currentTask.metadata?.task_title || "Task Completed",
+              });
             }
             
             break;
           }
 
-          // Check for failed/cancelled status
-          if (currentTask.status === "failed" || currentTask.status === "cancelled") {
+          // Check for failed status
+          if (currentTask.status === "failed") {
             send("step", { 
               type: "error", 
-              desc: currentTask.error || `Task ${currentTask.status}` 
+              desc: currentTask.error || "Task failed",
+              icon: "error"
             });
+            if (currentTask.incomplete_details) {
+              send("step", { type: "info", desc: currentTask.incomplete_details, icon: "info" });
+            }
             break;
           }
 
           pollCount++;
           
-          // Send progress indicator every 10 seconds
-          if (pollCount % 5 === 0) {
+          // Send progress indicator every 20 seconds
+          if (pollCount % 10 === 0) {
             send("step", { 
               type: "info", 
-              desc: `Still working... (${pollCount * 2}s elapsed)` 
+              desc: `Still working... (${pollCount * 2}s elapsed)`,
+              icon: "waiting"
             });
           }
         }
 
         if (pollCount >= maxPolls) {
-          send("step", { type: "error", desc: "Polling timeout reached. Task may still be running." });
+          send("step", { type: "error", desc: "Polling timeout reached. Task may still be running - check Manus dashboard.", icon: "error" });
         }
 
         send("done", { message: "Manus AI task finished." });
