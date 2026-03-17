@@ -83,7 +83,6 @@ async function createTask(prompt: string): Promise<TaskCreatedResponse> {
   }
   
   const data = await res.json();
-  console.log("[v0] Manus createTask response:", JSON.stringify(data, null, 2));
   
   // Handle different response structures - Manus may return task_id instead of id
   return {
@@ -188,6 +187,8 @@ export async function GET(req: Request) {
         let lastStatus = "pending";
         let lastOutputLength = 0;
         let sentSteps = new Set<string>();
+        let lastResponseTime = Date.now();
+        let continueSent = false;
 
         // Wait a bit before first poll
         await new Promise(r => setTimeout(r, 2000));
@@ -248,6 +249,23 @@ export async function GET(req: Request) {
             }
             
             lastOutputLength = currentTask.output.length;
+            lastResponseTime = Date.now(); // Reset timer when we get new output
+          }
+
+          // Check if no response for 1 minute (60 seconds) - send "continue" prompt
+          const timeSinceLastResponse = Date.now() - lastResponseTime;
+          if (timeSinceLastResponse >= 60000 && !continueSent && currentTask.status === "running") {
+            send("step", { type: "info", desc: "No response for 1 minute, sending continue...", icon: "waiting" });
+            
+            try {
+              // Create a new task with "continue" prompt referencing the original task
+              await createTask("continue");
+              continueSent = true;
+              lastResponseTime = Date.now(); // Reset timer after sending continue
+              send("step", { type: "info", desc: "Continue prompt sent", icon: "action" });
+            } catch (e) {
+              send("step", { type: "info", desc: "Could not send continue prompt", icon: "error" });
+            }
           }
 
           // Check if task is complete
