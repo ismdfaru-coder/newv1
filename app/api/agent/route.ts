@@ -132,14 +132,33 @@ export async function GET(req: Request) {
         send("step", { type: "success", desc: `Task created. ID: ${taskId}` });
         send("step", { type: "info", desc: `Session ID: ${sessionId}` });
 
-        // ── 2. Fetch session to get liveUrl ─────────────────────────────
+        // ── 2. Fetch session to get liveUrl with retry ─────────────────────────────
         send("step", { type: "info", desc: "Fetching browser session..." });
         
-        // Give the session a moment to initialize
-        await new Promise(r => setTimeout(r, 1000));
+        // Retry fetching session to get liveUrl (it may take a moment to become available)
+        let liveUrl: string | null = null;
+        let sessionStatus: string = "active";
+        const maxRetries = 5;
         
-        const session = await getSession(sessionId);
-        const liveUrl = session.liveUrl || null;
+        for (let retry = 0; retry < maxRetries; retry++) {
+          // Wait before fetching (longer on first try to let session initialize)
+          await new Promise(r => setTimeout(r, retry === 0 ? 2000 : 1500));
+          
+          try {
+            const session = await getSession(sessionId);
+            sessionStatus = session.status;
+            
+            if (session.liveUrl) {
+              liveUrl = session.liveUrl;
+              send("step", { type: "success", desc: `Live URL found: ${liveUrl.substring(0, 50)}...` });
+              break;
+            } else {
+              send("step", { type: "info", desc: `Waiting for live URL... (attempt ${retry + 1}/${maxRetries})` });
+            }
+          } catch (e) {
+            send("step", { type: "info", desc: `Session fetch attempt ${retry + 1} failed, retrying...` });
+          }
+        }
 
         // Send session info with liveUrl so iframe can display
         send("session", {
@@ -148,13 +167,13 @@ export async function GET(req: Request) {
           liveViewUrl: liveUrl,
           interactiveLiveViewUrl: liveUrl,
           liveUrl: liveUrl,
-          status: session.status,
+          status: sessionStatus,
         });
 
         if (liveUrl) {
           send("step", { type: "success", desc: "Live browser view ready!" });
         } else {
-          send("step", { type: "info", desc: "Waiting for live view..." });
+          send("step", { type: "error", desc: "Could not retrieve live URL. The browser may still be initializing." });
         }
 
         send("step", { type: "info", desc: `Task: "${query}"` });
@@ -173,18 +192,23 @@ export async function GET(req: Request) {
           const currentTask = await getTask(taskId);
           
           // Re-fetch session to check if liveUrl becomes available
-          if (!liveUrl && pollCount < 10) {
-            const updatedSession = await getSession(sessionId);
-            if (updatedSession.liveUrl) {
-              send("session", {
-                sessionId: sessionId,
-                taskId: taskId,
-                liveViewUrl: updatedSession.liveUrl,
-                interactiveLiveViewUrl: updatedSession.liveUrl,
-                liveUrl: updatedSession.liveUrl,
-                status: updatedSession.status,
-              });
-              send("step", { type: "success", desc: "Live browser view ready!" });
+          if (!liveUrl && pollCount < 15) {
+            try {
+              const updatedSession = await getSession(sessionId);
+              if (updatedSession.liveUrl) {
+                liveUrl = updatedSession.liveUrl;
+                send("session", {
+                  sessionId: sessionId,
+                  taskId: taskId,
+                  liveViewUrl: updatedSession.liveUrl,
+                  interactiveLiveViewUrl: updatedSession.liveUrl,
+                  liveUrl: updatedSession.liveUrl,
+                  status: updatedSession.status,
+                });
+                send("step", { type: "success", desc: "Live browser view ready!" });
+              }
+            } catch {
+              // Ignore session fetch errors during polling
             }
           }
 
