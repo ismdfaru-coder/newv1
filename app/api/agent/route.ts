@@ -1,64 +1,48 @@
 // app/api/agent/route.ts
-// Browser Use API v2 implementation
-// Creates a task, fetches session for liveUrl, and polls for completion
+// Manus API implementation
+// Creates a task, polls for completion, and streams status updates
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const BROWSER_USE_API_URL = "https://api.browser-use.com/api/v2";
-const BROWSER_USE_API_KEY = process.env.BROWSER_USE_API_KEY || "";
+const MANUS_API_URL = "https://api.manus.im";
+const MANUS_API_KEY = process.env.MANUS_API_KEY || "";
 
-// Helper to get auth headers - uses X-Browser-Use-API-Key header
+// Helper to get auth headers
 const getAuthHeaders = () => ({
-  "X-Browser-Use-API-Key": BROWSER_USE_API_KEY,
+  "X-API-Key": MANUS_API_KEY,
   "Content-Type": "application/json",
 });
 
-// Response from POST /tasks - only returns id and sessionId
+// Response from POST /v1/tasks
 interface TaskCreatedResponse {
-  id: string;
-  sessionId: string;
+  task_id: string;
+  task_url?: string;
+  status?: string;
 }
 
-// Response from GET /tasks/{id}
-interface TaskView {
-  id: string;
-  sessionId: string;
-  task: string;
-  status: "created" | "started" | "finished" | "stopped";
-  output?: string | null;
-  isSuccess?: boolean | null;
-  cost?: string | null;
-  steps?: TaskStep[];
+// Response from GET /v1/tasks/{task_id}
+interface TaskStatusResponse {
+  task_id: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  output?: {
+    result?: string;
+    artifacts?: Array<{
+      type: string;
+      url?: string;
+      content?: string;
+    }>;
+  };
   error?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
-interface TaskStep {
-  number: number;
-  memory: string;
-  url: string;
-  screenshotUrl?: string | null;
-  actions: string[];
-}
-
-// Response from GET /sessions/{id}
-interface SessionView {
-  id: string;
-  status: "active" | "stopped";
-  liveUrl?: string | null;
-  recordingUrl?: string | null;
-  tasks: Array<{
-    id: string;
-    status: string;
-    output?: string | null;
-  }>;
-}
-
-async function createTask(task: string): Promise<TaskCreatedResponse> {
-  const res = await fetch(`${BROWSER_USE_API_URL}/tasks`, {
+async function createTask(prompt: string): Promise<TaskCreatedResponse> {
+  const res = await fetch(`${MANUS_API_URL}/v1/tasks`, {
     method: "POST",
     headers: getAuthHeaders(),
-    body: JSON.stringify({ task }),
+    body: JSON.stringify({ prompt }),
   });
   
   if (!res.ok) {
@@ -69,29 +53,15 @@ async function createTask(task: string): Promise<TaskCreatedResponse> {
   return res.json();
 }
 
-async function getSession(sessionId: string): Promise<SessionView> {
-  const res = await fetch(`${BROWSER_USE_API_URL}/sessions/${sessionId}`, {
+async function getTaskStatus(taskId: string): Promise<TaskStatusResponse> {
+  const res = await fetch(`${MANUS_API_URL}/v1/tasks/${taskId}?convert=true`, {
     method: "GET",
     headers: getAuthHeaders(),
   });
   
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Failed to get session: ${res.status} - ${errText}`);
-  }
-  
-  return res.json();
-}
-
-async function getTask(taskId: string): Promise<TaskView> {
-  const res = await fetch(`${BROWSER_USE_API_URL}/tasks/${taskId}`, {
-    method: "GET",
-    headers: getAuthHeaders(),
-  });
-  
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Failed to get task: ${res.status} - ${errText}`);
+    throw new Error(`Failed to get task status: ${res.status} - ${errText}`);
   }
   
   return res.json();
@@ -105,8 +75,8 @@ export async function GET(req: Request) {
     return new Response(JSON.stringify({ error: "Missing query" }), { status: 400 });
   }
 
-  if (!BROWSER_USE_API_KEY) {
-    return new Response(JSON.stringify({ error: "BROWSER_USE_API_KEY environment variable is not set" }), { status: 500 });
+  if (!MANUS_API_KEY) {
+    return new Response(JSON.stringify({ error: "MANUS_API_KEY environment variable is not set" }), { status: 500 });
   }
 
   const encoder = new TextEncoder();
@@ -117,154 +87,101 @@ export async function GET(req: Request) {
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
 
       try {
-        // ── 1. Create Browser Use task ─────────────────────────────
-        send("step", { type: "info", desc: "Creating Browser Use task..." });
+        // ── 1. Create Manus task ─────────────────────────────
+        send("step", { type: "info", desc: "Creating Manus AI task..." });
 
         const taskResponse = await createTask(query);
         
-        if (!taskResponse.id || !taskResponse.sessionId) {
-          throw new Error("Invalid response: missing task id or sessionId");
+        if (!taskResponse.task_id) {
+          throw new Error("Invalid response: missing task_id");
         }
 
-        const taskId = taskResponse.id;
-        const sessionId = taskResponse.sessionId;
+        const taskId = taskResponse.task_id;
 
         send("step", { type: "success", desc: `Task created. ID: ${taskId}` });
-        send("step", { type: "info", desc: `Session ID: ${sessionId}` });
-
-        // ── 2. Fetch session to get liveUrl with retry ─────────────────────────────
-        send("step", { type: "info", desc: "Fetching browser session..." });
         
-        // Retry fetching session to get liveUrl (it may take a moment to become available)
-        let liveUrl: string | null = null;
-        let sessionStatus: string = "active";
-        const maxRetries = 5;
-        
-        for (let retry = 0; retry < maxRetries; retry++) {
-          // Wait before fetching (longer on first try to let session initialize)
-          await new Promise(r => setTimeout(r, retry === 0 ? 2000 : 1500));
-          
-          try {
-            const session = await getSession(sessionId);
-            sessionStatus = session.status;
-            
-            if (session.liveUrl) {
-              liveUrl = session.liveUrl;
-              send("step", { type: "success", desc: `Live URL found: ${liveUrl.substring(0, 50)}...` });
-              break;
-            } else {
-              send("step", { type: "info", desc: `Waiting for live URL... (attempt ${retry + 1}/${maxRetries})` });
-            }
-          } catch (e) {
-            send("step", { type: "info", desc: `Session fetch attempt ${retry + 1} failed, retrying...` });
-          }
+        // Send task URL if available
+        if (taskResponse.task_url) {
+          send("session", {
+            taskId: taskId,
+            taskUrl: taskResponse.task_url,
+            status: "pending",
+          });
         }
 
-        // Send session info with liveUrl so iframe can display
-        send("session", {
-          sessionId: sessionId,
-          taskId: taskId,
-          liveViewUrl: liveUrl,
-          interactiveLiveViewUrl: liveUrl,
-          liveUrl: liveUrl,
-          status: sessionStatus,
-        });
+        send("step", { type: "info", desc: `Processing: "${query}"` });
 
-        if (liveUrl) {
-          send("step", { type: "success", desc: "Live browser view ready!" });
-        } else {
-          send("step", { type: "error", desc: "Could not retrieve live URL. The browser may still be initializing." });
-        }
-
-        send("step", { type: "info", desc: `Task: "${query}"` });
-
-        // ── 3. Poll for task completion ──────────────────────────────────────
-        send("step", { type: "info", desc: "Browser Use agent is executing the task..." });
+        // ── 2. Poll for task completion ──────────────────────────────────────
+        send("step", { type: "info", desc: "Manus AI is working on your task..." });
 
         const maxPolls = 180; // 3 minutes max
         let pollCount = 0;
-        let lastStatus = "created";
-        let lastStepCount = 0;
+        let lastStatus = "pending";
+
+        // Wait a bit before first poll
+        await new Promise(r => setTimeout(r, 3000));
 
         while (pollCount < maxPolls) {
-          await new Promise(r => setTimeout(r, 1000));
+          await new Promise(r => setTimeout(r, 2000));
           
-          const currentTask = await getTask(taskId);
-          
-          // Re-fetch session to check if liveUrl becomes available
-          if (!liveUrl && pollCount < 15) {
-            try {
-              const updatedSession = await getSession(sessionId);
-              if (updatedSession.liveUrl) {
-                liveUrl = updatedSession.liveUrl;
-                send("session", {
-                  sessionId: sessionId,
-                  taskId: taskId,
-                  liveViewUrl: updatedSession.liveUrl,
-                  interactiveLiveViewUrl: updatedSession.liveUrl,
-                  liveUrl: updatedSession.liveUrl,
-                  status: updatedSession.status,
-                });
-                send("step", { type: "success", desc: "Live browser view ready!" });
-              }
-            } catch {
-              // Ignore session fetch errors during polling
+          let currentTask: TaskStatusResponse;
+          try {
+            currentTask = await getTaskStatus(taskId);
+          } catch (e) {
+            // Task might not be ready yet, continue polling
+            pollCount++;
+            if (pollCount % 5 === 0) {
+              send("step", { type: "info", desc: `Waiting for task to be ready... (${pollCount * 2}s elapsed)` });
             }
+            continue;
           }
 
           // Send status update if changed
           if (currentTask.status !== lastStatus) {
             send("step", { 
-              type: currentTask.status === "finished" ? "success" : "info", 
+              type: currentTask.status === "completed" ? "success" : 
+                    currentTask.status === "failed" ? "error" : "info", 
               desc: `Task status: ${currentTask.status}` 
             });
             lastStatus = currentTask.status;
           }
 
-          // Send step updates
-          if (currentTask.steps && currentTask.steps.length > lastStepCount) {
-            const newSteps = currentTask.steps.slice(lastStepCount);
-            for (const step of newSteps) {
-              send("step", { 
-                type: "info", 
-                desc: `Step ${step.number}: ${step.memory.substring(0, 100)}...`,
-                url: step.url,
-                screenshotUrl: step.screenshotUrl
-              });
-            }
-            lastStepCount = currentTask.steps.length;
-          }
-
           // Check if task is complete
-          if (currentTask.status === "finished") {
+          if (currentTask.status === "completed") {
             send("step", { type: "success", desc: "Task completed!" });
             
             if (currentTask.output) {
+              const resultText = currentTask.output.result || 
+                JSON.stringify(currentTask.output, null, 2);
+              
               send("result", { 
-                output: currentTask.output,
-                success: currentTask.isSuccess ?? true,
-                cost: currentTask.cost
+                output: resultText,
+                success: true,
+                artifacts: currentTask.output.artifacts || []
               });
               
-              send("summary", { text: currentTask.output });
+              send("summary", { text: resultText });
             }
             
             break;
           }
 
-          // Check for stopped status
-          if (currentTask.status === "stopped") {
-            send("step", { type: "info", desc: "Task was stopped" });
+          // Check for failed/cancelled status
+          if (currentTask.status === "failed" || currentTask.status === "cancelled") {
+            send("step", { 
+              type: "error", 
+              desc: currentTask.error || `Task ${currentTask.status}` 
+            });
             break;
           }
 
           pollCount++;
           
           // Send progress indicator every 10 seconds
-          if (pollCount % 10 === 0) {
+          if (pollCount % 5 === 0) {
             send("step", { 
               type: "info", 
-              desc: `Still working... (${pollCount}s elapsed, ${lastStepCount} steps completed)` 
+              desc: `Still working... (${pollCount * 2}s elapsed)` 
             });
           }
         }
@@ -273,7 +190,7 @@ export async function GET(req: Request) {
           send("step", { type: "error", desc: "Polling timeout reached. Task may still be running." });
         }
 
-        send("done", { message: "Agent finished. See browser panel for results." });
+        send("done", { message: "Manus AI task finished." });
 
       } catch (err: unknown) {
         const errorMessage = err instanceof Error ? err.message : String(err);
@@ -281,11 +198,11 @@ export async function GET(req: Request) {
         // Handle specific errors
         if (errorMessage.includes("401") || errorMessage.includes("403") || errorMessage.includes("Unauthorized") || errorMessage.includes("unauthorized")) {
           send("agent_error", { 
-            message: "Invalid API key. Please check your BROWSER_USE_API_KEY environment variable." 
+            message: "Invalid API key. Please check your MANUS_API_KEY environment variable." 
           });
         } else if (errorMessage.includes("402") || errorMessage.includes("quota") || errorMessage.includes("limit")) {
           send("agent_error", { 
-            message: "API quota exceeded. Please check your Browser Use account at cloud.browser-use.com" 
+            message: "API quota exceeded. Please check your Manus account." 
           });
         } else {
           send("agent_error", { message: errorMessage });
