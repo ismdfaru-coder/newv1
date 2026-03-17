@@ -1,36 +1,34 @@
 "use client"
 
-// Manus AI Agent Tab - v3
+// Manus AI Agent Tab - v4 (fixed imports)
 import { useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
-import { 
-  ArrowUp, 
-  Loader2, 
-  Copy, 
-  Check, 
-  RotateCcw, 
-  ExternalLink, 
-  FileText, 
-  Code, 
-  Sparkles, 
-  Bot, 
-  Zap, 
-  X,
-  Download,
-  File,
-  FileImage,
-  FileSpreadsheet,
-  ChevronDown,
-  ChevronRight,
-  Circle,
-  CheckCircle2,
-  XCircle,
-  Clock,
-  Search,
-  PenTool,
-  Globe,
-  Brain
-} from "lucide-react"
+import { ArrowUp } from "lucide-react"
+import { Loader2 } from "lucide-react"
+import { Copy } from "lucide-react"
+import { Check } from "lucide-react"
+import { RotateCcw } from "lucide-react"
+import { ExternalLink } from "lucide-react"
+import { FileText } from "lucide-react"
+import { Code } from "lucide-react"
+import { Sparkles } from "lucide-react"
+import { Bot } from "lucide-react"
+import { Zap } from "lucide-react"
+import { X } from "lucide-react"
+import { Download } from "lucide-react"
+import { File } from "lucide-react"
+import { FileImage } from "lucide-react"
+import { FileSpreadsheet } from "lucide-react"
+import { ChevronDown } from "lucide-react"
+import { ChevronRight } from "lucide-react"
+import { Circle } from "lucide-react"
+import { CheckCircle2 } from "lucide-react"
+import { XCircle } from "lucide-react"
+import { Clock } from "lucide-react"
+import { Search } from "lucide-react"
+import { PenTool } from "lucide-react"
+import { Globe as GlobeIcon } from "lucide-react"
+import { Brain } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { DocViewer, DocWizard, type DocData } from "@/components/doc-viewer"
 import { SlidesViewer, SlidesWizard, type SlidesData } from "@/components/slides-viewer"
@@ -130,7 +128,7 @@ export default function AgentsPage() {
     if (icon === "error" || type === "error") return <XCircle className="h-3.5 w-3.5 text-red-500" />
     if (icon === "waiting") return <Clock className="h-3.5 w-3.5 text-amber-500" />
     if (icon === "action") return <Zap className="h-3.5 w-3.5 text-purple-400" />
-    if (type === "browsing") return <Globe className="h-3.5 w-3.5 text-blue-400" />
+    if (type === "browsing") return <GlobeIcon className="h-3.5 w-3.5 text-blue-400" />
     if (type === "searching") return <Search className="h-3.5 w-3.5 text-cyan-500" />
     if (type === "writing") return <PenTool className="h-3.5 w-3.5 text-pink-500" />
     if (type === "info") return <Circle className="h-3.5 w-3.5 text-blue-400" />

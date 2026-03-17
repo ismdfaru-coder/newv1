@@ -82,7 +82,15 @@ async function createTask(prompt: string): Promise<TaskCreatedResponse> {
     throw new Error(`Failed to create task: ${res.status} - ${errText}`);
   }
   
-  return res.json();
+  const data = await res.json();
+  console.log("[v0] Manus createTask response:", JSON.stringify(data, null, 2));
+  
+  // Handle different response structures - Manus may return task_id instead of id
+  return {
+    id: data.id || data.task_id,
+    metadata: data.metadata,
+    status: data.status,
+  };
 }
 
 async function getTaskStatus(taskId: string): Promise<TaskResponse> {
