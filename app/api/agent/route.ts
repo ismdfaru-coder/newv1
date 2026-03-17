@@ -72,7 +72,8 @@ async function createTask(prompt: string): Promise<TaskCreatedResponse> {
     method: "POST",
     headers: getAuthHeaders(),
     body: JSON.stringify({ 
-      instructions: prompt,
+      prompt: prompt,
+      mode: "agent",
     }),
   });
   

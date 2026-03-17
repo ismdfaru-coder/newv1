@@ -1,6 +1,6 @@
 "use client"
 
-// Manus AI Agent Tab - Updated
+// Manus AI Agent Tab - v3
 import { useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { 
