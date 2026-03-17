@@ -5,12 +5,12 @@
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const MANUS_API_URL = "https://api.manus.im";
+const MANUS_API_URL = "https://api.manus.ai";
 const MANUS_API_KEY = process.env.MANUS_API_KEY || "";
 
-// Helper to get auth headers
+// Helper to get auth headers - Manus uses "API_KEY" header
 const getAuthHeaders = () => ({
-  "X-API-Key": MANUS_API_KEY,
+  "API_KEY": MANUS_API_KEY,
   "Content-Type": "application/json",
 });
 
